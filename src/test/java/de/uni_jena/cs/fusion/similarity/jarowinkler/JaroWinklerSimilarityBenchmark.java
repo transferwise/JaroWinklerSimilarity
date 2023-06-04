@@ -42,7 +42,7 @@ import java.util.zip.GZIPInputStream;
  */
 public class JaroWinklerSimilarityBenchmark {
     private static final String DATASET_PATH = "dataset1/dbpedia_2016-10_persondata_en_names_unique_sorted.gz";
-    private static final int QUERIES_SAMPLE_SIZE = 1000;
+    private static final int QUERIES_SAMPLE_SIZE = 100;
     private static final double SIMILARITY_THRESHOLD = 0.95;
 
     public static void main(String[] args) throws Exception {
@@ -72,8 +72,8 @@ public class JaroWinklerSimilarityBenchmark {
         public void setup() {
             List<String> dataset = loadDataset();
             this.jaroWinklerSimilarity = JaroWinklerSimilarity.with(dataset, SIMILARITY_THRESHOLD);
-            this.queriesSample = IntStream.range(0, dataset.size() / QUERIES_SAMPLE_SIZE)
-                    .mapToObj(i -> dataset.get(i * QUERIES_SAMPLE_SIZE))
+            this.queriesSample = IntStream.range(0, QUERIES_SAMPLE_SIZE)
+                    .mapToObj(i -> dataset.get(i * dataset.size() / QUERIES_SAMPLE_SIZE))
                     .collect(Collectors.toList());
         }
 

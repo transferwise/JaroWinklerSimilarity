@@ -48,6 +48,7 @@ public class JaroWinklerSimilarity<T> implements Function<String, Map<T, Double>
 	public final static int COMMON_PREFIX_LENGTH_LIMIT = 4;
 	public final static double BOOST_THRESHOLD = 0.7;
 	public final static double BOOST_FACTOR = 0.1;
+	private final static int DEFAULT_ARRAY_POOL_CAPACITY = 50;
 
 	private static int equalInRange(boolean[] array, boolean expected, int lowerBound, int upperBound) {
 		int result = 0;
@@ -110,11 +111,14 @@ public class JaroWinklerSimilarity<T> implements Function<String, Map<T, Double>
 	 *                              second string have been assigned (TRUE =
 	 *                              assigned)
 	 * @param commonCharsTerm       Assigned characters of the term.
+	 * @param queryArrayPool        Pool of assignedQuery arrays
+	 * @param termArrayPool         Pool of assgnedTerm arrays
 	 */
-	private static <R> void match(Trie<R> termTrie, double threshold, String query, int queryLength,
+	private static <R> void match(Trie<R> termTrie, double threshold, char[] query, int queryLength,
 			int termTargetLength, int windowSize, int minCommonCharacters, int minHalfTranspositions,
 			int maxCommonPrefixSize, int saveCommonCharsQuery, boolean[] assignedQuery, boolean[] assignedTerm,
-			char[] commonCharsTerm, Map<R, Double> results) {
+			char[] commonCharsTerm, Map<R, Double> results,
+			BooleanArrayPool queryArrayPool, BooleanArrayPool termArrayPool) {
 
 		if (termTrie.containsLength(termTargetLength)) {
 			// current branch contains string of target length
@@ -142,7 +146,7 @@ public class JaroWinklerSimilarity<T> implements Function<String, Map<T, Double>
 						queryLength) - 1;
 
 				// update maxCommonPrefixSize
-				if (termCurrentLength <= maxCommonPrefixSize && query.charAt(termCurrentLength - 1) != currentTermChar)
+				if (termCurrentLength <= maxCommonPrefixSize && query[termCurrentLength - 1] != currentTermChar)
 				// currently in the prefix and characters at current position
 				// do not match
 				{
@@ -152,7 +156,7 @@ public class JaroWinklerSimilarity<T> implements Function<String, Map<T, Double>
 
 				// search matching char for current term char in window
 				for (int i = assignableQueryWindowLowerBoundIndex; i <= assignableQueryCurrentWindowUpperBoundIndex; i++) {
-					if (!assignedQuery[i] && query.charAt(i) == currentTermChar) {
+					if (!assignedQuery[i] && query[i] == currentTermChar) {
 						// unassigned common character was found
 
 						assignedQuery[i] = true;
@@ -168,8 +172,8 @@ public class JaroWinklerSimilarity<T> implements Function<String, Map<T, Double>
 					// window lower bound inside of query string
 					if (assignedQuery[assignableQueryWindowLowerBoundIndex]) {
 						// character at window lower bound is assigned
-						if (query.charAt(
-								assignableQueryWindowLowerBoundIndex) != commonCharsTerm[saveCommonCharsQuery]) {
+						if (query[
+								assignableQueryWindowLowerBoundIndex] != commonCharsTerm[saveCommonCharsQuery]) {
 							// common characters at last save position not equal
 							minHalfTranspositions++;
 						}
@@ -207,7 +211,7 @@ public class JaroWinklerSimilarity<T> implements Function<String, Map<T, Double>
 					if (assignedQuery[i]) {
 						// position is assigned
 
-						if (query.charAt(i) != commonCharsTerm[saveCommonCharsQuery]) {
+						if (query[i] != commonCharsTerm[saveCommonCharsQuery]) {
 							// common characters at current position not equal
 
 							minHalfTranspositions++;
@@ -235,8 +239,8 @@ public class JaroWinklerSimilarity<T> implements Function<String, Map<T, Double>
 				} else {
 					// iterate children
 					Iterator<? extends Trie<R>> children = termTrie.childrenIterator();
-					boolean[] termAssignedCopy = new boolean[termTargetLength];
-					boolean[] queryAssignedCopy = new boolean[queryLength];
+					boolean[] termAssignedCopy = termArrayPool.acquireDirty();
+					boolean[] queryAssignedCopy = queryArrayPool.acquireDirty();
 					while (children.hasNext()) {
 
 						System.arraycopy(assignedTerm, 0, termAssignedCopy, 0, termTargetLength);
@@ -247,8 +251,10 @@ public class JaroWinklerSimilarity<T> implements Function<String, Map<T, Double>
 						// traverse child
 						match(child, threshold, query, queryLength, termTargetLength, windowSize, minCommonCharacters,
 								minHalfTranspositions, maxCommonPrefixSize, saveCommonCharsQuery, queryAssignedCopy,
-								termAssignedCopy, commonCharsTerm, results);
+								termAssignedCopy, commonCharsTerm, results, queryArrayPool, termArrayPool);
 					}
+					termArrayPool.release(termAssignedCopy);
+					queryArrayPool.release(queryAssignedCopy);
 				}
 			}
 		}
@@ -279,13 +285,15 @@ public class JaroWinklerSimilarity<T> implements Function<String, Map<T, Double>
 		// max value of l = the size of the emphasized first few characters
 		int maxCommonPrefixSize = Math.min(COMMON_PREFIX_LENGTH_LIMIT, Math.min(secondLength, firstLength));
 		// recursive traverse of the trie to get matching strings of length2
-		match(Tries.singletonTrieSet(first), threshold, second, secondLength, firstLength, windowSize, 0 // minCommonCharacters
+		match(Tries.singletonTrieSet(first), threshold, second.toCharArray(), secondLength, firstLength, windowSize, 0 // minCommonCharacters
 				, 0 // minHalfTranspositions
 				, maxCommonPrefixSize, 0 // saveCommonCharsQuery
 				, new boolean[secondLength] // assignedQuery
 				, new boolean[firstLength] // assignedTerm
 				, new char[Math.min(secondLength, firstLength)] // commonCharsTerm
-				, results);
+				, results
+				, new BooleanArrayPool(DEFAULT_ARRAY_POOL_CAPACITY, secondLength)
+				, new BooleanArrayPool(DEFAULT_ARRAY_POOL_CAPACITY, firstLength));
 		return results.get(first);
 	}
 
@@ -298,12 +306,12 @@ public class JaroWinklerSimilarity<T> implements Function<String, Map<T, Double>
 	 * given {@link Collection} considering a given threshold. The created
 	 * {@link JaroWinklerSimilarity} is not backed by the {@link Collection}, so it
 	 * will not reflect changes of the {@link Collection}.
-	 * 
+	 *
 	 * @param terms            {@link Collection} of matched and returned terms.
 	 * @param defaultThreshold Default minimum similarity of matching terms.
 	 * @return A {@link JaroWinklerSimilarity} instance to match the content of the
 	 *         given {@link Collection} considering the given threshold.
-	 * 
+	 *
 	 * @since 1.0
 	 */
 	public static JaroWinklerSimilarity<String> with(Collection<String> terms, double defaultThreshold) {
@@ -311,25 +319,27 @@ public class JaroWinklerSimilarity<T> implements Function<String, Map<T, Double>
 	}
 
 	/**
-	 * 
+	 *
 	 * Prepares a {@link JaroWinklerSimilarity} instance to match the content of a
 	 * given {@link Map} considering a given threshold. The matching will search for
 	 * similar keys, but return the corresponding values. The created
 	 * {@link JaroWinklerSimilarity} is not backed by the {@link Map}, so it will
 	 * not reflect changes of the {@link Map}.
-	 * 
+	 *
 	 * @param terms            {@link Map} of matched terms and returned values.
 	 * @param defaultThreshold Default minimum similarity of matching terms.
 	 * @return A {@link JaroWinklerSimilarity} instance to match the content of the
 	 *         given {@link Map} considering the given threshold.
-	 * 
+	 *
 	 * @param <T> Type of the map values and returned values by the matching.
-	 * 
+	 *
 	 * @since 1.0
 	 */
 	public static <T> JaroWinklerSimilarity<T> with(Map<String, T> terms, double defaultThreshold) {
 		return new JaroWinklerSimilarity<T>(new TrieMap<T>(terms), defaultThreshold);
 	}
+
+	private int arrayPoolCapacity = DEFAULT_ARRAY_POOL_CAPACITY;
 
 	private final Trie<T> trie;
 
@@ -357,21 +367,26 @@ public class JaroWinklerSimilarity<T> implements Function<String, Map<T, Double>
 
 		// get length of query
 		int queryLength = query.length();
+		char[] queryCharArray = query.toCharArray();
 
+		BooleanArrayPool queryArrayPool = new BooleanArrayPool(arrayPoolCapacity, queryLength);
 		// iterate possible lengths of terms
 		for (Integer termTargetLength : this.trie.containedLengths()) {
 			// calculate window size for common characters
 			int windowSize = windowSize(queryLength, termTargetLength);
 			// max value of l = the size of the emphasized first few characters
 			int maxCommonPrefixSize = Math.min(COMMON_PREFIX_LENGTH_LIMIT, Math.min(queryLength, termTargetLength));
+
+			BooleanArrayPool termArrayPool = new BooleanArrayPool(arrayPoolCapacity, termTargetLength);
+
 			// recursive traverse of the trie to get matching strings of length2
-			match(this.trie, threshold, query, queryLength, termTargetLength, windowSize, 0 // minCommonCharacters
+			match(this.trie, threshold, queryCharArray, queryLength, termTargetLength, windowSize, 0 // minCommonCharacters
 					, 0 // minHalfTranspositions
 					, maxCommonPrefixSize, 0 // saveCommonCharsQuery
 					, new boolean[queryLength] // assignedQuery
 					, new boolean[termTargetLength] // assignedTerm
 					, new char[Math.min(queryLength, termTargetLength)] // commonCharsTerm
-					, results);
+					, results, queryArrayPool, termArrayPool);
 		}
 		return results;
 	}
@@ -398,5 +413,13 @@ public class JaroWinklerSimilarity<T> implements Function<String, Map<T, Double>
 	 */
 	public void setThreshold(double defaultThreshold) {
 		this.defaultThreshold = defaultThreshold;
+	}
+
+	/**
+	 * Change array pool capacity. Pool helps to reduce object rate allocation and reduce load on the CPU.
+	 * @param arrayPoolCapacity new pool capacity
+	 */
+	public void setArrayPoolCapacity(int arrayPoolCapacity) {
+		this.arrayPoolCapacity = arrayPoolCapacity;
 	}
 }
